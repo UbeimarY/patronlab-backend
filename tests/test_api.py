@@ -264,3 +264,31 @@ async def test_deep_queries_are_rejected(gql: GraphQL) -> None:
     deep = "{ __schema { types " + "{ fields { type " * 6 + "{ name }" + " } }" * 6 + " } }"
     body = await gql(deep)
     assert "depth" in body["errors"][0]["message"].lower()
+
+
+async def test_saving_can_change_the_material(gql: GraphQL, make_user) -> None:  # noqa: ANN001
+    token = await make_user("rosa@example.com")
+    pattern_id = await _create(gql, token)
+    await gql(
+        SAVE,
+        token,
+        input={
+            "id": pattern_id,
+            "baseVersion": 1,
+            "document": sample_document(2),
+            "material": "leather",
+        },
+    )
+    body = await gql("query($id: ID!) { pattern(id: $id) { material } }", token, id=pattern_id)
+    assert body["data"]["pattern"]["material"] == "leather"
+    wrong = await gql(
+        SAVE,
+        token,
+        input={
+            "id": pattern_id,
+            "baseVersion": 2,
+            "document": sample_document(2),
+            "material": "gold",
+        },
+    )
+    assert _code(wrong) == "INVALID_MATERIAL"

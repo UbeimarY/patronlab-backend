@@ -189,6 +189,7 @@ class SavePatternInput:
     base_version: int = strawberry.field(description="The version this edit started from.")
     document: JSON
     note: str = ""
+    material: str | None = None
 
 
 # ---------- Helpers ----------
@@ -400,7 +401,10 @@ class Mutation:
     )
     async def save_pattern(self, info: Info[Context, None], input: SavePatternInput) -> PatternType:
         document = _document(input.document)
+        material = _material(input.material) if input.material else None
         pattern = await _owned_pattern(info, input.id, lock=True)
+        if material and input.base_version == pattern.current_version:
+            pattern.material = material
         return await _add_version(info, pattern, input.base_version, document, input.note)
 
     @strawberry.mutation(description="Restores an old version by saving it as the newest one.")
