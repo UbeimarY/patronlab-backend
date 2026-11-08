@@ -1,0 +1,51 @@
+[project]
+name = "patronlab"
+version = "0.1.0"
+description = "Pattern editor API for artisans: GraphQL, versioning and AI-assisted variations and nesting."
+readme = "README.md"
+authors = [
+    { name = "Ubeimar Yepes", email = "142528546+UbeimarY@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.20.1",
+    "asyncpg>=0.32.0",
+    "email-validator>=2.3.0",
+    "fastapi>=0.162.2",
+    "numpy>=2.4.6",
+    "pillow>=13.0.0",
+    "pwdlib[argon2]>=0.3.1",
+    "pydantic-settings>=2.16.2",
+    "pyjwt>=2.15.1",
+    "scikit-learn>=1.9.1",
+    "sqlalchemy[asyncio]>=2.1.8",
+    "strawberry-graphql[fastapi]>=0.341.2",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "anyio>=4.16.0",
+    "asgi-lifespan>=2.1.0",
+    "httpx>=0.28.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# GraphQL operations read best on one line.
+"tests/*" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
