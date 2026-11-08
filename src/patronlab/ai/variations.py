@@ -12,6 +12,9 @@ Fitness rewards, in order of weight:
   contrast  neighboring shapes, and shapes vs background, easy to tell apart
   coverage  covered area close to the original design (keeps its density)
 
+Pieces bigger than a quarter of the design are treated as the base (the
+cushion's front, the bag's body): they may change color but never move.
+
 It is a search guided by explicit design criteria, not a generative model:
 results are reproducible with the same seed, and every score can be explained.
 """
@@ -127,6 +130,10 @@ def _contrast_score(document: PatternDocument, masks: np.ndarray) -> float:
     return sum(parts) / len(parts)
 
 
+def _is_base(shape: Shape, document: PatternDocument) -> bool:
+    return shape.width * shape.height > 0.25 * document.width * document.height
+
+
 def _mutate(
     shapes: list[Shape],
     palette: list[str],
@@ -139,6 +146,9 @@ def _mutate(
         changes: dict[str, float | str] = {}
         if rng.random() < 0.35:
             changes["fill"] = rng.choice(palette)
+        if _is_base(shape, document):
+            result.append(shape.model_copy(update=changes) if changes else shape)
+            continue
         if rng.random() < 0.3:
             changes["x"] = min(
                 document.width, max(0.0, shape.x + rng.gauss(0, document.width * 0.04 * strength))

@@ -72,6 +72,32 @@ def test_variations_improve_the_score_and_use_the_palette() -> None:
         assert [s.id for s in variation.document.shapes] == [s.id for s in document.shapes]
 
 
+def test_the_base_piece_never_moves() -> None:
+    base = {
+        "id": "base",
+        "kind": "rect",
+        "x": 150,
+        "y": 100,
+        "width": 280,
+        "height": 180,
+        "rotation": 0,
+        "fill": "#eeeeee",
+    }
+    raw = sample_document(6)
+    raw["shapes"].insert(0, base)
+    document = PatternDocument.model_validate(raw)
+    _, variations = generate_variations(document, ["#1d3557", "#e9c46a"], count=3, seed=2)
+    for variation in variations:
+        moved = variation.document.shapes[0]
+        assert (moved.x, moved.y, moved.width, moved.height, moved.rotation) == (
+            150,
+            100,
+            280,
+            180,
+            0,
+        )
+
+
 def test_variations_are_reproducible_with_the_same_seed() -> None:
     document = PatternDocument.model_validate(sample_document(5))
     first = generate_variations(document, ["#111111", "#eeeeee"], count=2, seed=7)
