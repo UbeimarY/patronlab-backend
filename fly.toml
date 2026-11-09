@@ -6,7 +6,7 @@ primary_region = "iad"
   dockerfile = "Dockerfile"
 
 [env]
-  CORS_ORIGINS = '["http://localhost:4200"]'
+    CORS_ORIGINS = '["http://localhost:4200","https://patronlab-ubeimar.netlify.app"]'
 
 [http_service]
   internal_port = 8000
