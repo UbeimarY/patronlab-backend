@@ -25,7 +25,7 @@ from patronlab.ai.variations import generate_variations
 from patronlab.api.context import Context
 from patronlab.api.errors import AppError, mask_errors, not_found
 from patronlab.db.models import Pattern, PatternVersion, User
-from patronlab.document import MATERIALS, PatternDocument
+from patronlab.document import MATERIALS, MAX_POINTS, PatternDocument, upgrade
 from patronlab.security import hash_password, issue_token, verify_password
 
 MAX_PATTERNS_PER_USER = 200
@@ -99,7 +99,7 @@ class PatternType:
         )
         if row is None:
             raise AppError("VERSION_NOT_FOUND", f"La versión {number} no existe.")
-        return row
+        return upgrade(row)
 
     @strawberry.field(description="Saved versions, newest first.")
     async def versions(self, info: Info[Context, None]) -> list[VersionType]:
@@ -196,10 +196,22 @@ class SavePatternInput:
 
 
 def _document(raw: Any) -> PatternDocument:
+    """Validates a document (v1 is upgraded to v2) or explains every problem found."""
+    shapes = raw.get("shapes") if isinstance(raw, dict) else None
+    if isinstance(shapes, list):
+        for index, shape in enumerate(shapes):
+            points = shape.get("points") if isinstance(shape, dict) else None
+            if isinstance(points, list) and len(points) > MAX_POINTS:
+                raise AppError(
+                    "TOO_MANY_POINTS",
+                    f"La pieza {index + 1} tiene {len(points)} puntos; el máximo es {MAX_POINTS}.",
+                )
     try:
         return PatternDocument.model_validate(raw)
     except ValidationError as error:
-        problems = [f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in error.errors()[:5]]
+        problems = [
+            f"{'.'.join(map(str, e['loc']))}: {e['msg']}".lstrip(": ") for e in error.errors()[:5]
+        ]
         raise AppError("INVALID_DOCUMENT", "El diseño no es válido.", problems=problems) from error
 
 
@@ -268,7 +280,7 @@ async def _add_version(
         PatternVersion(
             pattern_id=pattern.id,
             number=pattern.current_version,
-            document=document.model_dump(mode="json"),
+            document=document.dump(),
             note=note.strip()[:200],
             shape_count=len(document.shapes),
         )
@@ -387,7 +399,7 @@ class Mutation:
             PatternVersion(
                 pattern_id=pattern.id,
                 number=1,
-                document=document.model_dump(mode="json"),
+                document=document.dump(),
                 note="Versión inicial",
                 shape_count=len(document.shapes),
             )
@@ -487,9 +499,7 @@ class Mutation:
         return VariationsResult(
             original=ScoreType(**_score(original)),
             variations=[
-                VariationType(
-                    document=v.document.model_dump(mode="json"), score=ScoreType(**_score(v.score))
-                )
+                VariationType(document=v.document.dump(), score=ScoreType(**_score(v.score)))
                 for v in variations
             ],
         )

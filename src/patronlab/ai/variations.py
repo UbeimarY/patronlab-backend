@@ -160,6 +160,8 @@ def _mutate(
             factor = min(1.25, max(0.8, rng.gauss(1, 0.08 * strength)))
             changes["width"] = shape.width * factor
             changes["height"] = shape.height * factor
+            if shape.points:
+                changes["points"] = [(x * factor, y * factor) for x, y in shape.points]
         if rng.random() < 0.2:
             changes["rotation"] = (shape.rotation + rng.choice([-30, -15, 15, 30, 45, 90])) % 360
         result.append(shape.model_copy(update=changes) if changes else shape)

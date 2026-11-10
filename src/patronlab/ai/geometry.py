@@ -43,15 +43,24 @@ _UNIT = {
 }
 
 
+def local_outline(shape: Shape) -> list[Point]:
+    """The shape's polygon before rotation, relative to its center (millimeters)."""
+    if shape.kind == "path":
+        return list(shape.points or [])
+    return [(ux * shape.width, uy * shape.height) for ux, uy in _UNIT[shape.kind]]
+
+
 def outline(shape: Shape, rotation_offset: float = 0.0) -> list[Point]:
-    """The shape's polygon in document coordinates (millimeters)."""
+    """The shape's polygon in document coordinates (millimeters).
+
+    Paths are rotated around their center and translated, like every other kind.
+    """
     angle = math.radians(shape.rotation + rotation_offset)
     cos, sin = math.cos(angle), math.sin(angle)
-    points = []
-    for ux, uy in _UNIT[shape.kind]:
-        px, py = ux * shape.width, uy * shape.height
-        points.append((shape.x + px * cos - py * sin, shape.y + px * sin + py * cos))
-    return points
+    return [
+        (shape.x + px * cos - py * sin, shape.y + px * sin + py * cos)
+        for px, py in local_outline(shape)
+    ]
 
 
 def area(points: list[Point]) -> float:

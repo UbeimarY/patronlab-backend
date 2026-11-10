@@ -292,3 +292,21 @@ async def test_saving_can_change_the_material(gql: GraphQL, make_user) -> None: 
         },
     )
     assert _code(wrong) == "INVALID_MATERIAL"
+
+
+async def test_documents_are_always_returned_as_v2(gql: GraphQL, make_user) -> None:  # noqa: ANN001
+    token = await make_user("rosa@example.com")
+    pattern_id = await _create(gql, token)  # sends a v1 document
+    body = await gql(PATTERN, token, id=pattern_id)
+    document = body["data"]["pattern"]["document"]
+    assert document["schemaVersion"] == 2 and document["mode"] == "pattern"
+    assert document["shapes"][0]["layerId"] is None
+
+
+async def test_paths_with_too_many_points_are_rejected(gql: GraphQL, make_user) -> None:  # noqa: ANN001
+    token = await make_user("rosa@example.com")
+    document = sample_document(1)
+    document["shapes"][0].update(kind="path", points=[[i % 7, i % 11] for i in range(2001)])
+    body = await gql(CREATE, token, input={"name": "X", "material": "wood", "document": document})
+    assert _code(body) == "TOO_MANY_POINTS"
+    assert "2000" in body["errors"][0]["message"]
