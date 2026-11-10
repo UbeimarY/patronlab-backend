@@ -412,3 +412,16 @@ async def test_ai_jobs_wait_in_line_and_give_up_when_busy(settings, monkeypatch)
             busy = await gql(layout, token, doc=sample_document(2))
     assert _code(busy) == "RATE_LIMITED"
     assert "otras solicitudes" in busy["errors"][0]["message"]
+
+
+async def test_barniz_patterns_use_the_mopa_mopa_material(gql: GraphQL, make_user) -> None:  # noqa: ANN001
+    from tests.test_document import barniz_document
+
+    token = await make_user("rosa@example.com")
+    assert "mopa-mopa" in (await gql("{ materials }"))["data"]["materials"]
+    body = await gql(
+        CREATE,
+        token,
+        input={"name": "Plato", "material": "mopa-mopa", "document": barniz_document()},
+    )
+    assert body["data"]["createPattern"]["material"] == "mopa-mopa"

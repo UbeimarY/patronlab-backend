@@ -18,7 +18,8 @@ from pydantic.alias_generators import to_camel
 
 ShapeKind = Literal["rect", "ellipse", "triangle", "hexagon", "star", "leaf", "path"]
 Mode = Literal["pattern", "barniz"]
-MATERIALS = ("fabric", "felt", "leather", "wood", "acrylic", "paper")
+# "mopa-mopa" is the resin of Barniz de Pasto; "wood" is wood cut with a laser.
+MATERIALS = ("mopa-mopa", "fabric", "felt", "leather", "wood", "acrylic", "paper")
 SCHEMA_VERSION = 2
 MAX_SHAPES = 400  # pattern mode, as in v1
 MAX_BARNIZ_SHAPES = 1500

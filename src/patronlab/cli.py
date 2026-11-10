@@ -30,7 +30,7 @@ DEMO_EMAIL = "artesana@demo.co"
 # (name, material, document factory)
 STARTERS: list[tuple[str, str, Callable[[], dict[str, Any]]]] = [
     ("Cojín de hojas", "felt", leaf_cushion),
-    ("Plato colibrí (barniz)", "wood", hummingbird_plate),
+    ("Plato colibrí (barniz)", "mopa-mopa", hummingbird_plate),
 ]
 
 
