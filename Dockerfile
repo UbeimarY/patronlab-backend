@@ -8,7 +8,9 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 
 # Prebuilt wheels only: no third-party build scripts run inside the image.
 COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --locked --no-dev --no-build --no-install-project
+# The test suites shipped inside SciPy, scikit-learn, NumPy... are never imported: ~75 MB less.
+RUN uv sync --locked --no-dev --no-build --no-install-project \
+    && find .venv -type d -name tests -prune -exec rm -rf {} +
 
 COPY src ./src
 COPY alembic.ini ./
