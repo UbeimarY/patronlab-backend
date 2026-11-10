@@ -59,5 +59,8 @@ class PatternVersion(Base):
     number: Mapped[int] = mapped_column(Integer)
     document: Mapped[dict[str, Any]] = mapped_column(JSONB)
     note: Mapped[str] = mapped_column(String(200), default="")
+    # Summary of the document, so lists never load the JSONB.
     shape_count: Mapped[int] = mapped_column(Integer)
+    mode: Mapped[str] = mapped_column(String(10), default="pattern", server_default="pattern")
+    layer_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

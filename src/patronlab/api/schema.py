@@ -75,10 +75,14 @@ class PatternType:
     current_version: int
     created_at: datetime
     updated_at: datetime
+    mode: str = strawberry.field(description='"pattern" or "barniz", from the current version.')
+    piece_count: int
+    layer_count: int
     _pattern: strawberry.Private[Pattern]
 
     @staticmethod
-    def of(pattern: Pattern) -> "PatternType":
+    def of(pattern: Pattern, summary: "Summary") -> "PatternType":
+        mode, piece_count, layer_count = summary
         return PatternType(
             id=strawberry.ID(str(pattern.id)),
             name=pattern.name,
@@ -86,6 +90,9 @@ class PatternType:
             current_version=pattern.current_version,
             created_at=pattern.created_at,
             updated_at=pattern.updated_at,
+            mode=mode,
+            piece_count=piece_count,
+            layer_count=layer_count,
             _pattern=pattern,
         )
 
@@ -194,6 +201,53 @@ class SavePatternInput:
 
 # ---------- Helpers ----------
 
+# (mode, piece count, layer count) of a version: stored in columns, never read from the JSONB.
+Summary = tuple[str, int, int]
+
+
+def _summary_of(document: PatternDocument) -> Summary:
+    return document.mode, len(document.shapes), len(document.layers)
+
+
+def _with_summary() -> Any:
+    """Patterns joined with the summary columns of their current version."""
+    return select(
+        Pattern, PatternVersion.mode, PatternVersion.shape_count, PatternVersion.layer_count
+    ).join(
+        PatternVersion,
+        (PatternVersion.pattern_id == Pattern.id)
+        & (PatternVersion.number == Pattern.current_version),
+    )
+
+
+async def _pattern_type(info: Info[Context, None], pattern: Pattern) -> PatternType:
+    row = (
+        await info.context.session.execute(
+            select(
+                PatternVersion.mode, PatternVersion.shape_count, PatternVersion.layer_count
+            ).where(
+                PatternVersion.pattern_id == pattern.id,
+                PatternVersion.number == pattern.current_version,
+            )
+        )
+    ).one()
+    return PatternType.of(pattern, (row[0], row[1], row[2]))
+
+
+def _version_row(
+    pattern: Pattern, number: int, document: PatternDocument, note: str
+) -> PatternVersion:
+    mode, pieces, layers = _summary_of(document)
+    return PatternVersion(
+        pattern_id=pattern.id,
+        number=number,
+        document=document.dump(),
+        note=note,
+        shape_count=pieces,
+        mode=mode,
+        layer_count=layers,
+    )
+
 
 def _document(raw: Any) -> PatternDocument:
     """Validates a document (v1 is upgraded to v2) or explains every problem found."""
@@ -276,22 +330,14 @@ async def _add_version(
     session = info.context.session
     pattern.current_version += 1
     pattern.updated_at = func.now()
-    session.add(
-        PatternVersion(
-            pattern_id=pattern.id,
-            number=pattern.current_version,
-            document=document.dump(),
-            note=note.strip()[:200],
-            shape_count=len(document.shapes),
-        )
-    )
+    session.add(_version_row(pattern, pattern.current_version, document, note.strip()[:200]))
     try:
         await session.commit()
     except IntegrityError as error:
         await session.rollback()
         raise AppError("VERSION_CONFLICT", "Otra edición se guardó primero.") from error
     await session.refresh(pattern)
-    return PatternType.of(pattern)
+    return PatternType.of(pattern, _summary_of(document))
 
 
 async def _session_for(info: Info[Context, None], user: User) -> AuthPayload:
@@ -314,14 +360,14 @@ class Query:
     @strawberry.field(description="My patterns, last edited first.")
     async def patterns(self, info: Info[Context, None]) -> list[PatternType]:
         user = await info.context.user()
-        rows = await info.context.session.scalars(
-            select(Pattern).where(Pattern.owner_id == user.id).order_by(Pattern.updated_at.desc())
+        rows = await info.context.session.execute(
+            _with_summary().where(Pattern.owner_id == user.id).order_by(Pattern.updated_at.desc())
         )
-        return [PatternType.of(p) for p in rows]
+        return [PatternType.of(p, (mode, pieces, layers)) for p, mode, pieces, layers in rows]
 
     @strawberry.field
     async def pattern(self, info: Info[Context, None], id: strawberry.ID) -> PatternType:
-        return PatternType.of(await _owned_pattern(info, id))
+        return await _pattern_type(info, await _owned_pattern(info, id))
 
     @strawberry.field(description="Materials the editor and the optimizer support.")
     def materials(self) -> list[str]:
@@ -395,18 +441,10 @@ class Mutation:
         )
         session.add(pattern)
         await session.flush()
-        session.add(
-            PatternVersion(
-                pattern_id=pattern.id,
-                number=1,
-                document=document.dump(),
-                note="Versión inicial",
-                shape_count=len(document.shapes),
-            )
-        )
+        session.add(_version_row(pattern, 1, document, "Versión inicial"))
         await session.commit()
         await session.refresh(pattern)
-        return PatternType.of(pattern)
+        return PatternType.of(pattern, _summary_of(document))
 
     @strawberry.mutation(
         description="Saves a new version. Fails with VERSION_CONFLICT if baseVersion is stale."
@@ -443,7 +481,7 @@ class Mutation:
         pattern.name = _name(name)
         await info.context.session.commit()
         await info.context.session.refresh(pattern)
-        return PatternType.of(pattern)
+        return await _pattern_type(info, pattern)
 
     @strawberry.mutation
     async def delete_pattern(self, info: Info[Context, None], id: strawberry.ID) -> bool:

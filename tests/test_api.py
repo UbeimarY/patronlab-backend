@@ -310,3 +310,19 @@ async def test_paths_with_too_many_points_are_rejected(gql: GraphQL, make_user) 
     body = await gql(CREATE, token, input={"name": "X", "material": "wood", "document": document})
     assert _code(body) == "TOO_MANY_POINTS"
     assert "2000" in body["errors"][0]["message"]
+
+
+async def test_lists_show_mode_and_counts_of_the_current_version(gql: GraphQL, make_user) -> None:  # noqa: ANN001
+    from tests.test_document import barniz_document
+
+    token = await make_user("rosa@example.com")
+    pattern_id = await _create(gql, token, shapes=4)
+    listed = await gql("{ patterns { mode pieceCount layerCount } }", token)
+    assert listed["data"]["patterns"] == [{"mode": "pattern", "pieceCount": 4, "layerCount": 0}]
+    await gql(
+        SAVE, token, input={"id": pattern_id, "baseVersion": 1, "document": barniz_document()}
+    )
+    one = await gql(
+        "query($id: ID!) { pattern(id: $id) { mode pieceCount layerCount } }", token, id=pattern_id
+    )
+    assert one["data"]["pattern"] == {"mode": "barniz", "pieceCount": 2, "layerCount": 1}
