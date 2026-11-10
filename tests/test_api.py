@@ -383,3 +383,32 @@ async def test_duplicate_respects_the_pattern_limit(gql: GraphQL, make_user, mon
     pattern_id = await _create(gql, token)
     monkeypatch.setattr(schema, "MAX_PATTERNS_PER_USER", 1)
     assert _code(await gql(DUPLICATE, token, id=pattern_id)) == "LIMIT_REACHED"
+
+
+async def test_ai_jobs_wait_in_line_and_give_up_when_busy(settings, monkeypatch) -> None:  # noqa: ANN001
+    import httpx
+    from asgi_lifespan import LifespanManager
+
+    from patronlab.api import schema
+    from patronlab.app import create_app
+    from tests.conftest import REGISTER
+
+    monkeypatch.setattr(schema, "QUEUE_SECONDS", 0.2)
+    settings.ai_concurrency = 0  # every slot is taken by other artisans' jobs
+    async with LifespanManager(create_app(settings)) as manager:
+        transport = httpx.ASGITransport(app=manager.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+
+            async def gql(query: str, token: str | None = None, **variables: object) -> dict:
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                response = await client.post(
+                    "/graphql", json={"query": query, "variables": variables}, headers=headers
+                )
+                return response.json()
+
+            user = {"email": "rosa@example.com", "password": PASSWORD, "fullName": "Rosa Ortiz"}
+            token = (await gql(REGISTER, input=user))["data"]["register"]["token"]
+            layout = "mutation($doc: JSON!) { optimizeLayout(document: $doc, rollWidth: 250) { usedLength } }"
+            busy = await gql(layout, token, doc=sample_document(2))
+    assert _code(busy) == "RATE_LIMITED"
+    assert "otras solicitudes" in busy["errors"][0]["message"]

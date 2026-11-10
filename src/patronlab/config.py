@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     max_image_bytes: int = 4 * 1024 * 1024
     # AI mutations allowed per artisan and minute (RATE_LIMITED beyond it).
     ai_requests_per_minute: int = 30
+    # AI jobs running at once; the rest wait in line. One job can peak at ~350 MB
+    # of the machine's memory (server included): 1 fits the 512 MB Fly machine.
+    ai_concurrency: int = 1
     # GraphiQL explorer at /graphql: handy for the demo, can be turned off.
     graphiql: bool = True
 

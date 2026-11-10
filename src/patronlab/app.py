@@ -1,5 +1,6 @@
 """Application factory."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -32,6 +33,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.ai_limiter = RateLimiter()
+    app.state.ai_slots = asyncio.Semaphore(settings.ai_concurrency)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

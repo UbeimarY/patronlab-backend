@@ -1,5 +1,6 @@
 """Per-request context: database session, settings and the signed-in artisan."""
 
+import asyncio
 import uuid
 from typing import Annotated
 
@@ -23,11 +24,13 @@ class Context(BaseContext):
         settings: Settings,
         token: str | None,
         ai_limiter: RateLimiter | None = None,
+        ai_slots: asyncio.Semaphore | None = None,
     ) -> None:
         super().__init__()
         self.session = session
         self.settings = settings
         self.ai_limiter = ai_limiter or RateLimiter()
+        self.ai_slots = ai_slots or asyncio.Semaphore(settings.ai_concurrency)
         self._token = token
         self._user: User | None = None
 
@@ -61,4 +64,5 @@ async def get_context(
         request.app.state.settings,
         token if scheme.lower() == "bearer" and token else None,
         request.app.state.ai_limiter,
+        request.app.state.ai_slots,
     )

@@ -38,6 +38,7 @@ from patronlab.security import hash_password, issue_token, verify_password
 
 MAX_PATTERNS_PER_USER = 200
 T = TypeVar("T")
+QUEUE_SECONDS = 20.0
 VECTORIZE_MAX_PIXELS = 8_000_000
 VECTORIZE_SECONDS = 8.0
 EVOLVE_MAX_SHAPES = 400
@@ -528,12 +529,26 @@ async def _ai_user(info: Info[Context, None]) -> User:
     return user
 
 
-async def _run_cpu(timeout: float, function: Callable[..., T], *args: Any) -> tuple[T, int]:
+async def _run_cpu(
+    info: Info[Context, None], timeout: float, function: Callable[..., T], *args: Any
+) -> tuple[T, int]:
     """Runs CPU-bound work in a thread (the event loop keeps serving others).
 
-    Returns the result and the elapsed milliseconds. The algorithms also check
-    their own deadline; this timeout is the safety net if one of them does not.
+    At most ``ai_concurrency`` jobs run at once (memory: each heavy job can take
+    ~160 MB on top of the ~190 MB the server uses); the others wait in line up
+    to QUEUE_SECONDS. Returns the result and the elapsed milliseconds (not
+    counting the wait). The algorithms also check their own deadline; this
+    timeout is the safety net if one of them does not.
     """
+    slots = info.context.ai_slots
+    try:
+        await asyncio.wait_for(slots.acquire(), QUEUE_SECONDS)
+    except TimeoutError as error:
+        raise AppError(
+            "RATE_LIMITED",
+            "La IA está atendiendo otras solicitudes. Intenta de nuevo en unos segundos.",
+            retryAfter=5,
+        ) from error
     started = time.perf_counter()
     try:
         result = await asyncio.wait_for(asyncio.to_thread(function, *args), timeout)
@@ -541,6 +556,8 @@ async def _run_cpu(timeout: float, function: Callable[..., T], *args: Any) -> tu
         raise AppError(
             "TIMEOUT", "El cálculo tardó demasiado. Prueba con un diseño más sencillo."
         ) from error
+    finally:
+        slots.release()
     return result, round((time.perf_counter() - started) * 1000)
 
 
@@ -715,7 +732,7 @@ class Mutation:
         if not 2 <= colors <= 8:
             raise AppError("INVALID_ARGUMENT", "Pide entre 2 y 8 colores.")
         picture = _image(info, image)
-        palette, _ = await _run_cpu(10, extract_palette, picture, colors)
+        palette, _ = await _run_cpu(info, 10, extract_palette, picture, colors)
         return [PaletteColorType(hex=c.hex, share=c.share) for c in palette]
 
     @strawberry.mutation(
@@ -744,6 +761,7 @@ class Mutation:
         picture = _image(info, image, max_pixels=VECTORIZE_MAX_PIXELS)
         try:
             result, elapsed = await _run_cpu(
+                info,
                 VECTORIZE_SECONDS + 1,
                 vectorize,
                 picture,
@@ -788,7 +806,7 @@ class Mutation:
         colors = _palette(palette)
         try:
             (original, variations), _ = await _run_cpu(
-                20, generate_variations, parsed, colors, count, seed
+                info, 20, generate_variations, parsed, colors, count, seed
             )
         except ValueError as error:
             raise AppError(
@@ -837,6 +855,7 @@ class Mutation:
             ) from error
         try:
             (original, variations, history), elapsed = await _run_cpu(
+                info,
                 EVOLVE_SECONDS + 5,
                 evolve,
                 parsed,
@@ -879,7 +898,7 @@ class Mutation:
         colors = _palette(palette)
         try:
             points, elapsed = await _run_cpu(
-                PARETO_SECONDS + 5, pareto_variations, parsed, colors, seed, PARETO_SECONDS
+                info, PARETO_SECONDS + 5, pareto_variations, parsed, colors, seed, PARETO_SECONDS
             )
         except ValueError as error:
             raise AppError(
@@ -904,7 +923,7 @@ class Mutation:
     async def analyze_colors(self, info: Info[Context, None], document: JSON) -> ColorAnalysis:
         await _ai_user(info)
         parsed = _document(document)
-        result, elapsed = await _run_cpu(10, analyze, parsed)
+        result, elapsed = await _run_cpu(info, 10, analyze, parsed)
         return ColorAnalysis(
             pairs=[
                 ColorPair(a=p.a, b=p.b, delta_e=p.delta_e, too_similar=p.too_similar)
@@ -945,6 +964,7 @@ class Mutation:
             )
         try:
             result, elapsed = await _run_cpu(
+                info,
                 LAYOUT_SECONDS * 2,
                 functools.partial(
                     optimize_layout,
