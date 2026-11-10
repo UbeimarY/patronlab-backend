@@ -27,6 +27,7 @@ from strawberry.types import Info
 from patronlab.ai.colors import analyze
 from patronlab.ai.nesting import optimize_layout
 from patronlab.ai.palette import InvalidImageError, decode_image, extract_palette
+from patronlab.ai.pareto import pareto_variations
 from patronlab.ai.variations import Weights, evolve, generate_variations
 from patronlab.ai.vectorize import ImageTooComplexError, vectorize
 from patronlab.api.context import Context
@@ -43,6 +44,8 @@ EVOLVE_MAX_SHAPES = 400
 EVOLVE_SECONDS = 12.0
 RASTER_MAX_SHAPES = 400
 LAYOUT_SECONDS = 12.0
+PARETO_MAX_SHAPES = 150
+PARETO_SECONDS = 15.0
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -283,6 +286,22 @@ class ColorAnalysis:
     harmonies: list[list[str]] = strawberry.field(
         description="From the dominant color, in LCh: complementary, analogous, triadic."
     )
+    elapsed_ms: int
+
+
+@strawberry.type
+class ParetoPoint:
+    document: JSON
+    balance: float
+    contrast: float
+    material_saving: float = strawberry.field(
+        description="1 - length / original length with SKYLINE nesting (an estimate)."
+    )
+
+
+@strawberry.type
+class ParetoResult:
+    points: list[ParetoPoint] = strawberry.field(description="Non-dominated designs (max. 12).")
     elapsed_ms: int
 
 
@@ -841,6 +860,40 @@ class Mutation:
             history=[
                 GenerationStat(generation=h.generation, best=h.best, average=h.average)
                 for h in history
+            ],
+            elapsed_ms=elapsed,
+        )
+
+    @strawberry.mutation(
+        description="NSGA-II: the Pareto front of balance, contrast and material saving."
+    )
+    async def pareto_variations(
+        self, info: Info[Context, None], document: JSON, palette: list[str], seed: int = 0
+    ) -> ParetoResult:
+        await _ai_user(info)
+        parsed = _document(document)
+        if len(parsed.shapes) > PARETO_MAX_SHAPES:
+            raise AppError(
+                "TOO_MANY_SHAPES", f"El frente de Pareto admite hasta {PARETO_MAX_SHAPES} piezas."
+            )
+        colors = _palette(palette)
+        try:
+            points, elapsed = await _run_cpu(
+                PARETO_SECONDS + 5, pareto_variations, parsed, colors, seed, PARETO_SECONDS
+            )
+        except ValueError as error:
+            raise AppError(
+                str(error), "Agrega piezas y una paleta antes de generar variaciones."
+            ) from error
+        return ParetoResult(
+            points=[
+                ParetoPoint(
+                    document=p.document.dump(),
+                    balance=p.balance,
+                    contrast=p.contrast,
+                    material_saving=p.material_saving,
+                )
+                for p in points
             ],
             elapsed_ms=elapsed,
         )
