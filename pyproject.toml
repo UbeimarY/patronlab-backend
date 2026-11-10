@@ -17,6 +17,7 @@ dependencies = [
     "pwdlib[argon2]>=0.3.1",
     "pydantic-settings>=2.16.2",
     "pyjwt>=2.15.1",
+    "scikit-image>=0.26.0",
     "scikit-learn>=1.9.1",
     "sqlalchemy[asyncio]>=2.1.8",
     "strawberry-graphql[fastapi]>=0.341.2",

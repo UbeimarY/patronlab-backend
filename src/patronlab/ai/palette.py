@@ -27,7 +27,9 @@ class PaletteColor:
     share: float
 
 
-def decode_image(data_url_or_base64: str, max_bytes: int) -> Image.Image:
+def decode_image(
+    data_url_or_base64: str, max_bytes: int, max_pixels: int = 40_000_000
+) -> Image.Image:
     payload = data_url_or_base64.split(",", 1)[-1]
     try:
         raw = base64.b64decode(payload, validate=True)
@@ -38,7 +40,7 @@ def decode_image(data_url_or_base64: str, max_bytes: int) -> Image.Image:
     try:
         image = Image.open(io.BytesIO(raw))
         # Guard against decompression bombs before decoding every pixel.
-        if image.width * image.height > 40_000_000:
+        if image.width * image.height > max_pixels:
             raise InvalidImageError("IMAGE_TOO_LARGE")
         return image.convert("RGB")
     except (UnidentifiedImageError, OSError) as error:

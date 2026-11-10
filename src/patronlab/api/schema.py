@@ -25,6 +25,7 @@ from strawberry.types import Info
 from patronlab.ai.nesting import optimize_layout
 from patronlab.ai.palette import InvalidImageError, decode_image, extract_palette
 from patronlab.ai.variations import generate_variations
+from patronlab.ai.vectorize import ImageTooComplexError, vectorize
 from patronlab.api.context import Context
 from patronlab.api.errors import AppError, mask_errors, not_found
 from patronlab.db.models import Pattern, PatternVersion, User
@@ -33,6 +34,8 @@ from patronlab.security import hash_password, issue_token, verify_password
 
 MAX_PATTERNS_PER_USER = 200
 T = TypeVar("T")
+VECTORIZE_MAX_PIXELS = 8_000_000
+VECTORIZE_SECONDS = 8.0
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -176,6 +179,22 @@ class LayoutType:
     baseline_cut_travel: float
 
 
+@strawberry.type
+class VectorLayer:
+    id: str
+    name: str = strawberry.field(description="Spanish name of the nearest color in our table.")
+    color: str
+    area_share: float = strawberry.field(description="Fraction of the image in this color.")
+
+
+@strawberry.type
+class VectorizeResult:
+    layers: list[VectorLayer]
+    shapes: JSON = strawberry.field(description="Path pieces (document v2 shapes), by layer.")
+    elapsed_ms: int
+    notes: list[str] = strawberry.field(description="What was done, in plain Spanish.")
+
+
 # ---------- Inputs ----------
 
 
@@ -271,6 +290,17 @@ def _document(raw: Any) -> PatternDocument:
             f"{'.'.join(map(str, e['loc']))}: {e['msg']}".lstrip(": ") for e in error.errors()[:5]
         ]
         raise AppError("INVALID_DOCUMENT", "El diseño no es válido.", problems=problems) from error
+
+
+def _image(info: Info[Context, None], data: str, max_pixels: int = 40_000_000) -> Any:
+    try:
+        return decode_image(data, info.context.settings.max_image_bytes, max_pixels)
+    except InvalidImageError as error:
+        message = {
+            "IMAGE_TOO_LARGE": "La imagen es muy pesada (máximo 4 MB y 8 megapíxeles).",
+            "IMAGE_NOT_BASE64": "No se pudo leer la imagen.",
+        }.get(str(error), "El archivo no es una imagen válida.")
+        raise AppError(str(error), message) from error
 
 
 def _palette(colors: list[str]) -> list[str]:
@@ -532,16 +562,61 @@ class Mutation:
         await _ai_user(info)
         if not 2 <= colors <= 8:
             raise AppError("INVALID_ARGUMENT", "Pide entre 2 y 8 colores.")
-        try:
-            picture = decode_image(image, info.context.settings.max_image_bytes)
-        except InvalidImageError as error:
-            message = {
-                "IMAGE_TOO_LARGE": "La imagen es muy pesada (máximo 4 MB).",
-                "IMAGE_NOT_BASE64": "No se pudo leer la imagen.",
-            }.get(str(error), "El archivo no es una imagen válida.")
-            raise AppError(str(error), message) from error
+        picture = _image(info, image)
         palette, _ = await _run_cpu(10, extract_palette, picture, colors)
         return [PaletteColorType(hex=c.hex, share=c.share) for c in palette]
+
+    @strawberry.mutation(
+        description="Sketch or photo to path pieces, one layer per color (k-means in CIELAB, "
+        "contour tracing and Douglas-Peucker)."
+    )
+    async def vectorize_image(
+        self,
+        info: Info[Context, None],
+        image: str,
+        width: float,
+        height: float,
+        colors: int = 4,
+        detail: float = 0.5,
+        min_area: float = 20.0,
+    ) -> VectorizeResult:
+        await _ai_user(info)
+        if not 2 <= colors <= 8:
+            raise AppError("INVALID_ARGUMENT", "Pide entre 2 y 8 colores.")
+        if not (10 <= width <= 2000 and 10 <= height <= 2000):
+            raise AppError("INVALID_ARGUMENT", "El tamaño debe estar entre 10 y 2000 mm.")
+        if not (0 <= detail <= 1 and 0 <= min_area <= 10_000):
+            raise AppError(
+                "INVALID_ARGUMENT", "El detalle va de 0 a 1 y el área mínima de 0 a 10000 mm²."
+            )
+        picture = _image(info, image, max_pixels=VECTORIZE_MAX_PIXELS)
+        try:
+            result, elapsed = await _run_cpu(
+                VECTORIZE_SECONDS + 1,
+                vectorize,
+                picture,
+                width,
+                height,
+                colors,
+                detail,
+                min_area,
+                VECTORIZE_SECONDS,
+            )
+        except ImageTooComplexError as error:
+            raise AppError(
+                "IMAGE_TOO_COMPLEX",
+                f"La imagen es muy compleja ({error.reason}). Usa menos colores, menos detalle "
+                "o un área mínima mayor.",
+            ) from error
+        return VectorizeResult(
+            layers=[
+                VectorLayer(id=v.id, name=v.name, color=v.color, area_share=v.area_share)
+                for v in result.layers
+            ],
+            shapes=result.shapes,
+            elapsed_ms=elapsed,
+            notes=result.notes,
+        )
 
     @strawberry.mutation(description="Evolutionary search of design variations using the palette.")
     async def generate_variations(
