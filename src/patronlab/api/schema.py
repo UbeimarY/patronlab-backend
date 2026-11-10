@@ -24,6 +24,7 @@ from strawberry.extensions import MaxTokensLimiter, QueryDepthLimiter
 from strawberry.scalars import JSON
 from strawberry.types import Info
 
+from patronlab.ai.colors import analyze
 from patronlab.ai.nesting import optimize_layout
 from patronlab.ai.palette import InvalidImageError, decode_image, extract_palette
 from patronlab.ai.variations import Weights, evolve, generate_variations
@@ -257,6 +258,32 @@ class VectorizeResult:
     shapes: JSON = strawberry.field(description="Path pieces (document v2 shapes), by layer.")
     elapsed_ms: int
     notes: list[str] = strawberry.field(description="What was done, in plain Spanish.")
+
+
+@strawberry.type
+class ColorPair:
+    a: str
+    b: str
+    delta_e: float = strawberry.field(description="CIEDE2000 difference.")
+    too_similar: bool = strawberry.field(description="deltaE < 10: hard to tell apart.")
+
+
+@strawberry.type
+class ColorName:
+    hex: str
+    name: str
+
+
+@strawberry.type
+class ColorAnalysis:
+    pairs: list[ColorPair] = strawberry.field(
+        description="Colors of pieces that touch, most similar first."
+    )
+    names: list[ColorName]
+    harmonies: list[list[str]] = strawberry.field(
+        description="From the dominant color, in LCh: complementary, analogous, triadic."
+    )
+    elapsed_ms: int
 
 
 # ---------- Inputs ----------
@@ -815,6 +842,23 @@ class Mutation:
                 GenerationStat(generation=h.generation, best=h.best, average=h.average)
                 for h in history
             ],
+            elapsed_ms=elapsed,
+        )
+
+    @strawberry.mutation(
+        description="ΔE2000 between touching colors, Spanish color names and LCh harmonies."
+    )
+    async def analyze_colors(self, info: Info[Context, None], document: JSON) -> ColorAnalysis:
+        await _ai_user(info)
+        parsed = _document(document)
+        result, elapsed = await _run_cpu(10, analyze, parsed)
+        return ColorAnalysis(
+            pairs=[
+                ColorPair(a=p.a, b=p.b, delta_e=p.delta_e, too_similar=p.too_similar)
+                for p in result.pairs
+            ],
+            names=[ColorName(hex=color, name=name) for color, name in result.names],
+            harmonies=result.harmonies,
             elapsed_ms=elapsed,
         )
 

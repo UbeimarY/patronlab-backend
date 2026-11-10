@@ -28,13 +28,15 @@ def _key(shape: Shape) -> tuple:
     )
 
 
-def shape_masks(document: PatternDocument, cache: MaskCache | None = None) -> np.ndarray:
+def shape_masks(
+    document: PatternDocument, cache: MaskCache | None = None, grid: int = GRID
+) -> np.ndarray:
     """Array of shape (shapes, rows, cols) with True where each shape covers a cell.
 
     With a cache, shapes that did not move are not drawn again (the evolutionary
     search changes only a few pieces from one candidate to the next).
     """
-    scale = GRID / max(document.width, document.height)
+    scale = grid / max(document.width, document.height)
     cols = max(1, round(document.width * scale))
     rows = max(1, round(document.height * scale))
     masks = np.zeros((len(document.shapes), rows, cols), dtype=bool)

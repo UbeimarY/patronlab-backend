@@ -12,8 +12,19 @@ seen in Barniz de Pasto work. It is not a standard: it names a color by its
 nearest entry (ΔE2000), so the name is a helpful approximation.
 """
 
+import math
+import warnings
+from dataclasses import dataclass
+
 import numpy as np
 from skimage.color import deltaE_ciede2000, lab2rgb, rgb2lab
+
+from patronlab.ai.geometry import area, outline
+from patronlab.ai.raster import shape_masks
+from patronlab.ai.variations import touching
+from patronlab.document import PatternDocument
+
+ANALYSIS_GRID = 192  # finer than the evolution's grid: small pieces must not miss a neighbor
 
 # Our own table (see the module docstring). Order does not matter.
 NAMES: dict[str, str] = {
@@ -96,3 +107,84 @@ def color_name(hex_color: str) -> str:
     lab = to_lab([hex_color])[0]
     distances = deltaE_ciede2000(np.broadcast_to(lab, _NAME_LAB.shape), _NAME_LAB)
     return NAMES[_NAME_HEXES[int(np.argmin(distances))]]
+
+
+# ---------- Analysis of a design ----------
+
+TOO_SIMILAR = 10.0  # ΔE2000 below this: neighboring sheets are hard to tell apart
+
+
+@dataclass(frozen=True, slots=True)
+class ColorPair:
+    a: str
+    b: str
+    delta_e: float
+    too_similar: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ColorAnalysis:
+    pairs: list[ColorPair]
+    names: list[tuple[str, str]]
+    harmonies: list[list[str]]
+
+
+def _lch_to_hex(lightness: float, chroma: float, hue: float) -> str:
+    """LCh to hex, lowering the chroma until the color exists in sRGB (gamut mapping)."""
+    for _ in range(30):
+        lab = np.array([lightness, chroma * math.cos(hue), chroma * math.sin(hue)])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # lab2rgb warns before clipping out-of-gamut colors
+            candidate = lab_to_hex(lab)
+        if float(deltaE_ciede2000(to_lab([candidate])[0], lab)) < 1.0:
+            return candidate
+        chroma *= 0.9
+    return candidate
+
+
+def harmonies(base: str) -> list[list[str]]:
+    """Complementary, analogous (±30°) and triadic (±120°) hues in LCh, same L and C."""
+    lightness, a, b = to_lab([base])[0]
+    chroma, hue = math.hypot(a, b), math.atan2(b, a)
+
+    def turn(degrees: float) -> str:
+        return _lch_to_hex(lightness, chroma, hue + math.radians(degrees))
+
+    return [
+        [base, turn(180)],
+        [turn(-30), base, turn(30)],
+        [base, turn(120), turn(240)],
+    ]
+
+
+def analyze(document: PatternDocument) -> ColorAnalysis:
+    """ΔE2000 between colors of pieces that touch, Spanish names, and harmonies.
+
+    Harmonies start from the dominant color (largest total area of pieces).
+    """
+    shapes = document.shapes
+    if not shapes:
+        return ColorAnalysis([], [], [])
+    near = touching(shape_masks(document, grid=ANALYSIS_GRID))
+    seen: set[tuple[str, str]] = set()
+    pairs = []
+    for i in range(len(shapes)):
+        for j in range(i + 1, len(shapes)):
+            a, b = sorted((shapes[i].fill, shapes[j].fill))
+            if a == b or not near[i, j] or (a, b) in seen:
+                continue
+            seen.add((a, b))
+            difference = round(delta_e(a, b), 2)
+            pairs.append(ColorPair(a, b, difference, difference < TOO_SIMILAR))
+    pairs.sort(key=lambda pair: (pair.delta_e, pair.a, pair.b))
+
+    used = list(
+        dict.fromkeys([layer.color for layer in document.layers] + [s.fill for s in shapes])
+    )
+    names = [(color, color_name(color)) for color in used]
+
+    coverage: dict[str, float] = {}
+    for shape in shapes:
+        coverage[shape.fill] = coverage.get(shape.fill, 0.0) + area(outline(shape))
+    dominant = max(coverage, key=lambda color: (coverage[color], color))
+    return ColorAnalysis(pairs, names, harmonies(dominant))
