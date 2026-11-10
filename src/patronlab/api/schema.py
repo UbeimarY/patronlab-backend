@@ -6,12 +6,14 @@ version numbers only) in a single request, with a typed, self-documenting API.
 """
 
 import asyncio
+import functools
 import math
 import re
 import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import Any, TypeVar
 
 import strawberry
@@ -38,6 +40,8 @@ VECTORIZE_MAX_PIXELS = 8_000_000
 VECTORIZE_SECONDS = 8.0
 EVOLVE_MAX_SHAPES = 400
 EVOLVE_SECONDS = 12.0
+RASTER_MAX_SHAPES = 400
+LAYOUT_SECONDS = 12.0
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -179,11 +183,46 @@ class EvolveResult:
 @strawberry.type
 class PlacementType:
     shape_id: str
-    x: float
+    x: float = strawberry.field(description="Top-left corner of the piece's box, mm.")
     y: float
     width: float
     height: float
     rotated: bool
+    angle: float = strawberry.field(
+        description="Extra rotation on the material, degrees (0/90 SKYLINE, steps of 15 RASTER). "
+        "The outline rotated by its own rotation plus this angle fits the box."
+    )
+
+    @staticmethod
+    def of(placement: Any) -> "PlacementType":
+        return PlacementType(
+            shape_id=placement.shape_id,
+            x=placement.x,
+            y=placement.y,
+            width=placement.width,
+            height=placement.height,
+            rotated=placement.rotated,
+            angle=placement.angle,
+        )
+
+
+@strawberry.enum
+class LayoutMethod(Enum):
+    SKYLINE = "SKYLINE"
+    RASTER = "RASTER"
+
+
+@strawberry.type
+class LayerPlan:
+    layer_id: str = strawberry.field(description='Empty ("") for pieces without a layer.')
+    color: str
+    area_cm2: float = strawberry.field(description="Real area of the pieces (not their boxes).")
+    used_length: float
+    waste_percent: float
+    sheets: int = strawberry.field(description="Sheets used; 1 when cutting from a roll.")
+    placements: list[PlacementType] = strawberry.field(
+        description="With sheets, sheet n (from 0) starts at y = n * sheetHeight."
+    )
 
 
 @strawberry.type
@@ -196,6 +235,12 @@ class LayoutType:
     cut_order: list[str]
     cut_travel: float
     baseline_cut_travel: float
+    method: str
+    skyline_length: float = strawberry.field(description="SKYLINE on the same roll, to compare.")
+    skyline_waste_percent: float
+    layers: list[LayerPlan] | None = strawberry.field(description="Only when perLayer is true.")
+    notes: list[str]
+    elapsed_ms: int
 
 
 @strawberry.type
@@ -741,23 +786,54 @@ class Mutation:
 
     @strawberry.mutation(description="Nesting on a roll of material and cutting order.")
     async def optimize_layout(
-        self, info: Info[Context, None], document: JSON, roll_width: float, spacing: float = 3.0
+        self,
+        info: Info[Context, None],
+        document: JSON,
+        roll_width: float,
+        spacing: float = 3.0,
+        per_layer: bool = False,
+        sheet_width: float | None = None,
+        sheet_height: float | None = None,
+        method: LayoutMethod = LayoutMethod.SKYLINE,
     ) -> LayoutType:
         await _ai_user(info)
         parsed = _document(document)
         if not 10 <= roll_width <= 5000 or not 0 <= spacing <= 50:
             raise AppError("INVALID_ARGUMENT", "Ancho entre 10 y 5000 mm; margen entre 0 y 50 mm.")
-        try:
-            result, _ = await _run_cpu(20, optimize_layout, parsed, roll_width, spacing)
-        except ValueError as error:
-            message = (
-                "Hay una pieza más ancha que el material."
-                if str(error) == "PIECE_WIDER_THAN_MATERIAL"
-                else "Agrega piezas antes de optimizar."
+        sheet = None
+        if sheet_width is not None or sheet_height is not None:
+            if sheet_width is None or sheet_height is None:
+                raise AppError("INVALID_ARGUMENT", "Indica el ancho y el alto de la hoja.")
+            if not (10 <= sheet_width <= 5000 and 10 <= sheet_height <= 5000):
+                raise AppError("INVALID_ARGUMENT", "La hoja debe medir entre 10 y 5000 mm.")
+            sheet = (sheet_width, sheet_height)
+        if method is LayoutMethod.RASTER and len(parsed.shapes) > RASTER_MAX_SHAPES:
+            raise AppError(
+                "TOO_MANY_SHAPES",
+                f"El acomodo RASTER admite hasta {RASTER_MAX_SHAPES} piezas; usa SKYLINE.",
             )
+        try:
+            result, elapsed = await _run_cpu(
+                LAYOUT_SECONDS * 2,
+                functools.partial(
+                    optimize_layout,
+                    method=method.value,
+                    per_layer=per_layer,
+                    sheet=sheet,
+                    time_limit=LAYOUT_SECONDS,
+                ),
+                parsed,
+                roll_width,
+                spacing,
+            )
+        except ValueError as error:
+            message = {
+                "PIECE_WIDER_THAN_MATERIAL": "Hay una pieza más ancha que el material.",
+                "PIECE_LARGER_THAN_SHEET": "Hay una pieza que no cabe en la hoja.",
+            }.get(str(error), "Agrega piezas antes de optimizar.")
             raise AppError(str(error), message) from error
         return LayoutType(
-            placements=[PlacementType(**vars_of(p)) for p in result.placements],
+            placements=[PlacementType.of(p) for p in result.placements],
             used_length=result.used_length,
             waste_percent=result.waste_percent,
             baseline_length=result.baseline_length,
@@ -765,6 +841,12 @@ class Mutation:
             cut_order=result.cut_order,
             cut_travel=result.cut_travel,
             baseline_cut_travel=result.baseline_cut_travel,
+            method=result.method,
+            skyline_length=result.skyline_length,
+            skyline_waste_percent=result.skyline_waste_percent,
+            layers=None if result.layers is None else [_layer_plan(p) for p in result.layers],
+            notes=result.notes,
+            elapsed_ms=elapsed,
         )
 
 
@@ -775,11 +857,16 @@ def _score(score: Any) -> dict[str, float]:
     }
 
 
-def vars_of(placement: Any) -> dict[str, Any]:
-    return {
-        name: getattr(placement, name)
-        for name in ("shape_id", "x", "y", "width", "height", "rotated")
-    }
+def _layer_plan(plan: Any) -> LayerPlan:
+    return LayerPlan(
+        layer_id=plan.layer_id,
+        color=plan.color,
+        area_cm2=plan.area_cm2,
+        used_length=plan.used_length,
+        waste_percent=plan.waste_percent,
+        sheets=plan.sheets,
+        placements=[PlacementType.of(p) for p in plan.placements],
+    )
 
 
 schema = strawberry.Schema(
