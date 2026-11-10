@@ -23,7 +23,8 @@ primary_region = "iad"
     timeout = "5s"
     grace_period = "30s"
 
-# NumPy, scikit-learn and Pillow peak near 200 MB while running the AI tools.
+# Measured: ~190 MB after start, ~350 MB at the peak of one AI job. AI jobs run one
+# at a time (AI_CONCURRENCY=1) to stay under 512 MB; running two at once needs 1 GB.
 [[vm]]
   memory = "512mb"
   cpu_kind = "shared"
