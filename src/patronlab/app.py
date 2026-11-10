@@ -25,8 +25,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = create_engine(settings.database_url)
         app.state.session_factory = async_sessionmaker(engine, expire_on_commit=False)
-        yield
-        await engine.dispose()
+        try:
+            yield
+        finally:
+            # Close the pool even if the app stops because of an error.
+            await engine.dispose()
 
     app = FastAPI(
         title="PatronLab API", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None
