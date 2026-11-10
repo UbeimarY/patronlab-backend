@@ -24,7 +24,7 @@ from strawberry.types import Info
 
 from patronlab.ai.nesting import optimize_layout
 from patronlab.ai.palette import InvalidImageError, decode_image, extract_palette
-from patronlab.ai.variations import generate_variations
+from patronlab.ai.variations import Weights, evolve, generate_variations
 from patronlab.ai.vectorize import ImageTooComplexError, vectorize
 from patronlab.api.context import Context
 from patronlab.api.errors import AppError, mask_errors, not_found
@@ -36,6 +36,8 @@ MAX_PATTERNS_PER_USER = 200
 T = TypeVar("T")
 VECTORIZE_MAX_PIXELS = 8_000_000
 VECTORIZE_SECONDS = 8.0
+EVOLVE_MAX_SHAPES = 400
+EVOLVE_SECONDS = 12.0
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -158,6 +160,23 @@ class VariationsResult:
 
 
 @strawberry.type
+class GenerationStat:
+    generation: int
+    best: float
+    average: float
+
+
+@strawberry.type
+class EvolveResult:
+    original: ScoreType
+    variations: list[VariationType]
+    history: list[GenerationStat] = strawberry.field(
+        description="Best and average fitness per generation (0 is the first population)."
+    )
+    elapsed_ms: int
+
+
+@strawberry.type
 class PlacementType:
     shape_id: str
     x: float
@@ -196,6 +215,14 @@ class VectorizeResult:
 
 
 # ---------- Inputs ----------
+
+
+@strawberry.input(description="Weights of the fitness; they are normalized to add up to 1.")
+class WeightsInput:
+    balance: float = 0.3
+    overlap: float = 0.25
+    contrast: float = 0.3
+    coverage: float = 0.15
 
 
 @strawberry.input
@@ -648,6 +675,68 @@ class Mutation:
                 VariationType(document=v.document.dump(), score=ScoreType(**_score(v.score)))
                 for v in variations
             ],
+        )
+
+    @strawberry.mutation(
+        description="Interactive evolution: favorites seed and steer the search, weights change "
+        "the fitness. In barniz mode colors change per layer and radial groups move as a whole."
+    )
+    async def evolve_variations(
+        self,
+        info: Info[Context, None],
+        document: JSON,
+        palette: list[str],
+        favorites: list[JSON] | None = None,
+        weights: WeightsInput | None = None,
+        seed: int = 0,
+    ) -> EvolveResult:
+        await _ai_user(info)
+        parsed = _document(document)
+        if len(parsed.shapes) > EVOLVE_MAX_SHAPES:
+            raise AppError(
+                "TOO_MANY_SHAPES", f"La evolución admite hasta {EVOLVE_MAX_SHAPES} piezas."
+            )
+        favorites = favorites or []
+        if len(favorites) > 6:
+            raise AppError("INVALID_ARGUMENT", "Marca como máximo 6 favoritas.")
+        liked = [_document(favorite) for favorite in favorites]
+        colors = _palette(palette)
+        chosen = weights or WeightsInput()
+        try:
+            fitness_weights = Weights(
+                chosen.balance, chosen.overlap, chosen.contrast, chosen.coverage
+            ).normalized()
+        except ValueError as error:
+            raise AppError(
+                "INVALID_ARGUMENT", "Los pesos deben ser positivos y no pueden ser todos cero."
+            ) from error
+        try:
+            (original, variations, history), elapsed = await _run_cpu(
+                EVOLVE_SECONDS + 5,
+                evolve,
+                parsed,
+                colors,
+                liked,
+                fitness_weights,
+                seed,
+                6,
+                EVOLVE_SECONDS,
+            )
+        except ValueError as error:
+            raise AppError(
+                str(error), "Agrega piezas y una paleta antes de generar variaciones."
+            ) from error
+        return EvolveResult(
+            original=ScoreType(**_score(original)),
+            variations=[
+                VariationType(document=v.document.dump(), score=ScoreType(**_score(v.score)))
+                for v in variations
+            ],
+            history=[
+                GenerationStat(generation=h.generation, best=h.best, average=h.average)
+                for h in history
+            ],
+            elapsed_ms=elapsed,
         )
 
     @strawberry.mutation(description="Nesting on a roll of material and cutting order.")
