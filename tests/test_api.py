@@ -326,3 +326,19 @@ async def test_lists_show_mode_and_counts_of_the_current_version(gql: GraphQL, m
         "query($id: ID!) { pattern(id: $id) { mode pieceCount layerCount } }", token, id=pattern_id
     )
     assert one["data"]["pattern"] == {"mode": "barniz", "pieceCount": 2, "layerCount": 1}
+
+
+async def test_ai_tools_are_rate_limited_per_user(gql: GraphQL, make_user, settings) -> None:  # noqa: ANN001
+    settings.ai_requests_per_minute = 2
+    rosa = await make_user("rosa@example.com")
+    luis = await make_user("luis@example.com")
+    layout = (
+        "mutation($doc: JSON!) { optimizeLayout(document: $doc, rollWidth: 250) { usedLength } }"
+    )
+    for _ in range(2):
+        assert "errors" not in await gql(layout, rosa, doc=sample_document(2))
+    limited = await gql(layout, rosa, doc=sample_document(2))
+    assert _code(limited) == "RATE_LIMITED"
+    assert limited["errors"][0]["extensions"]["retryAfter"] > 0
+    # Each artisan has their own quota.
+    assert "errors" not in await gql(layout, luis, doc=sample_document(2))

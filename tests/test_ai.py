@@ -138,3 +138,17 @@ def test_a_piece_wider_than_the_roll_is_reported() -> None:
     document = PatternDocument.model_validate(sample_document(3))
     with pytest.raises(ValueError, match="PIECE_WIDER_THAN_MATERIAL"):
         optimize_layout(document, roll_width=20)
+
+
+def test_rate_limiter_uses_a_sliding_window() -> None:
+    from patronlab.api.ratelimit import RateLimiter
+
+    now = [0.0]
+    limiter = RateLimiter(60, clock=lambda: now[0])
+    assert limiter.hit("a", 2) is None and limiter.hit("a", 2) is None
+    assert limiter.hit("a", 2) == 60
+    assert limiter.hit("b", 2) is None
+    now[0] = 30
+    assert limiter.hit("a", 2) == 30
+    now[0] = 60.5
+    assert limiter.hit("a", 2) is None

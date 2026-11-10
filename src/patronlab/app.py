@@ -11,6 +11,7 @@ from strawberry.fastapi import GraphQLRouter
 
 from patronlab import __version__
 from patronlab.api.context import get_context
+from patronlab.api.ratelimit import RateLimiter
 from patronlab.api.schema import schema
 from patronlab.config import Settings, get_settings
 from patronlab.db.session import create_engine
@@ -30,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="PatronLab API", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None
     )
     app.state.settings = settings
+    app.state.ai_limiter = RateLimiter()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

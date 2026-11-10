@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:4200"]
     # Largest image accepted for palette extraction, in bytes.
     max_image_bytes: int = 4 * 1024 * 1024
+    # AI mutations allowed per artisan and minute (RATE_LIMITED beyond it).
+    ai_requests_per_minute: int = 30
     # GraphiQL explorer at /graphql: handy for the demo, can be turned off.
     graphiql: bool = True
 

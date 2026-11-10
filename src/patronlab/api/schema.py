@@ -6,10 +6,13 @@ version numbers only) in a single request, with a typed, self-documenting API.
 """
 
 import asyncio
+import math
 import re
+import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, TypeVar
 
 import strawberry
 from pydantic import ValidationError
@@ -29,6 +32,7 @@ from patronlab.document import MATERIALS, MAX_POINTS, PatternDocument, upgrade
 from patronlab.security import hash_password, issue_token, verify_password
 
 MAX_PATTERNS_PER_USER = 200
+T = TypeVar("T")
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -340,6 +344,35 @@ async def _add_version(
     return PatternType.of(pattern, _summary_of(document))
 
 
+async def _ai_user(info: Info[Context, None]) -> User:
+    """The signed-in artisan, if they still have AI requests left this minute."""
+    user = await info.context.user()
+    wait = info.context.ai_limiter.hit(str(user.id), info.context.settings.ai_requests_per_minute)
+    if wait is not None:
+        raise AppError(
+            "RATE_LIMITED",
+            f"Hiciste muchas solicitudes a la IA. Intenta de nuevo en {math.ceil(wait)} s.",
+            retryAfter=wait,
+        )
+    return user
+
+
+async def _run_cpu(timeout: float, function: Callable[..., T], *args: Any) -> tuple[T, int]:
+    """Runs CPU-bound work in a thread (the event loop keeps serving others).
+
+    Returns the result and the elapsed milliseconds. The algorithms also check
+    their own deadline; this timeout is the safety net if one of them does not.
+    """
+    started = time.perf_counter()
+    try:
+        result = await asyncio.wait_for(asyncio.to_thread(function, *args), timeout)
+    except TimeoutError as error:
+        raise AppError(
+            "TIMEOUT", "El cálculo tardó demasiado. Prueba con un diseño más sencillo."
+        ) from error
+    return result, round((time.perf_counter() - started) * 1000)
+
+
 async def _session_for(info: Info[Context, None], user: User) -> AuthPayload:
     settings = info.context.settings
     token, expires_at = issue_token(
@@ -496,7 +529,7 @@ class Mutation:
     async def extract_palette(
         self, info: Info[Context, None], image: str, colors: int = 5
     ) -> list[PaletteColorType]:
-        await info.context.user()
+        await _ai_user(info)
         if not 2 <= colors <= 8:
             raise AppError("INVALID_ARGUMENT", "Pide entre 2 y 8 colores.")
         try:
@@ -507,7 +540,7 @@ class Mutation:
                 "IMAGE_NOT_BASE64": "No se pudo leer la imagen.",
             }.get(str(error), "El archivo no es una imagen válida.")
             raise AppError(str(error), message) from error
-        palette = await asyncio.to_thread(extract_palette, picture, colors)
+        palette, _ = await _run_cpu(10, extract_palette, picture, colors)
         return [PaletteColorType(hex=c.hex, share=c.share) for c in palette]
 
     @strawberry.mutation(description="Evolutionary search of design variations using the palette.")
@@ -519,7 +552,7 @@ class Mutation:
         count: int = 4,
         seed: int = 0,
     ) -> VariationsResult:
-        await info.context.user()
+        await _ai_user(info)
         parsed = _document(document)
         if not 1 <= count <= 6:
             raise AppError("INVALID_ARGUMENT", "Pide entre 1 y 6 variaciones.")
@@ -527,8 +560,8 @@ class Mutation:
             raise AppError("TOO_MANY_SHAPES", "Las variaciones admiten hasta 120 piezas.")
         colors = _palette(palette)
         try:
-            original, variations = await asyncio.to_thread(
-                generate_variations, parsed, colors, count, seed
+            (original, variations), _ = await _run_cpu(
+                20, generate_variations, parsed, colors, count, seed
             )
         except ValueError as error:
             raise AppError(
@@ -546,12 +579,12 @@ class Mutation:
     async def optimize_layout(
         self, info: Info[Context, None], document: JSON, roll_width: float, spacing: float = 3.0
     ) -> LayoutType:
-        await info.context.user()
+        await _ai_user(info)
         parsed = _document(document)
         if not 10 <= roll_width <= 5000 or not 0 <= spacing <= 50:
             raise AppError("INVALID_ARGUMENT", "Ancho entre 10 y 5000 mm; margen entre 0 y 50 mm.")
         try:
-            result = await asyncio.to_thread(optimize_layout, parsed, roll_width, spacing)
+            result, _ = await _run_cpu(20, optimize_layout, parsed, roll_width, spacing)
         except ValueError as error:
             message = (
                 "Hay una pieza más ancha que el material."

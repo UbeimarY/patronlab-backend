@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from strawberry.fastapi import BaseContext
 
 from patronlab.api.errors import unauthenticated
+from patronlab.api.ratelimit import RateLimiter
 from patronlab.config import Settings
 from patronlab.db.models import User
 from patronlab.db.session import get_session
@@ -16,10 +17,17 @@ from patronlab.security import read_token
 
 
 class Context(BaseContext):
-    def __init__(self, session: AsyncSession, settings: Settings, token: str | None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        settings: Settings,
+        token: str | None,
+        ai_limiter: RateLimiter | None = None,
+    ) -> None:
         super().__init__()
         self.session = session
         self.settings = settings
+        self.ai_limiter = ai_limiter or RateLimiter()
         self._token = token
         self._user: User | None = None
 
@@ -49,5 +57,8 @@ async def get_context(
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
     return Context(
-        session, request.app.state.settings, token if scheme.lower() == "bearer" and token else None
+        session,
+        request.app.state.settings,
+        token if scheme.lower() == "bearer" and token else None,
+        request.app.state.ai_limiter,
     )
