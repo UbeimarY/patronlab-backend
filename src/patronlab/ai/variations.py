@@ -31,6 +31,7 @@ It is a search guided by explicit design criteria, not a generative model:
 results are reproducible with the same seed, and every score can be explained.
 """
 
+import functools
 import math
 import random
 import time
@@ -90,6 +91,7 @@ class GenerationStat:
     average: float
 
 
+@functools.lru_cache(maxsize=4096)
 def _luminance(hex_color: str) -> float:
     channels = []
     for i in (1, 3, 5):

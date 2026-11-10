@@ -26,7 +26,7 @@ import random
 import time
 from dataclasses import dataclass
 
-from patronlab.ai.nesting import optimize_layout
+from patronlab.ai.nesting import PieceCache, packed_length
 from patronlab.ai.variations import Design, Evaluator, Genome, Weights
 from patronlab.document import PatternDocument
 
@@ -112,10 +112,11 @@ def pareto_variations(
     fitness = Evaluator(design, Weights().normalized())
     roll = document.width
     lengths: dict[tuple, float] = {}
+    pieces: PieceCache = {}
 
     def length(genome: Genome) -> float:
         if genome.moves not in lengths:
-            lengths[genome.moves] = optimize_layout(design.build(genome), roll, 3).used_length
+            lengths[genome.moves] = packed_length(design.build(genome), roll, 3, pieces)
         return lengths[genome.moves]
 
     original_length = length(design.original)

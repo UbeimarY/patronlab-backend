@@ -102,12 +102,23 @@ class Material:
     height: float | None = None
 
 
-def _pieces(shapes: list[Shape]) -> list[_Piece]:
+PieceCache = dict[tuple, tuple[float, float, float]]
+
+
+def _pieces(shapes: list[Shape], cache: PieceCache | None = None) -> list[_Piece]:
+    """Box and real area of each piece; with a cache, unchanged pieces are not measured again."""
     pieces = []
     for shape in shapes:
-        points = outline(shape)
-        x0, y0, x1, y1 = bounds(points)
-        pieces.append(_Piece(shape, x1 - x0, y1 - y0, area(points)))
+        key = (shape.id, shape.kind, shape.width, shape.height, shape.rotation)
+        if cache is not None and key in cache:
+            width, height, piece_area = cache[key]
+        else:
+            points = outline(shape)
+            x0, y0, x1, y1 = bounds(points)
+            width, height, piece_area = x1 - x0, y1 - y0, area(points)
+            if cache is not None:
+                cache[key] = (width, height, piece_area)
+        pieces.append(_Piece(shape, width, height, piece_area))
     return pieces
 
 
@@ -127,23 +138,24 @@ class _Skyline:
     def best(self, piece: _Piece, spacing: float) -> tuple[float, float, float, float, bool] | None:
         """(bottom, x, y, w, h, rotated) of the best position, or None if it does not fit."""
         best = None
+        segments = self.segments
         for rotated in (False, True):
             w = (piece.height if rotated else piece.width) + spacing
             h = (piece.width if rotated else piece.height) + spacing
-            for start, _, _ in self.segments:
-                if start + w > self.width + 1e-9:
+            for k, (start, _, _) in enumerate(segments):
+                end = start + w
+                if end > self.width + 1e-9:
+                    break  # segments are sorted by x: the next ones start further right
+                # The piece rests on the highest segment it spans (they start at k).
+                top, m = 0.0, k
+                while m < len(segments) and segments[m][0] < end - 1e-9:
+                    top = max(top, segments[m][2])
+                    m += 1
+                if best is not None and (top + h, start) >= best[:2]:
                     continue
-                # The piece rests on the highest segment it spans.
-                top = max(
-                    seg_top
-                    for seg_x, seg_w, seg_top in self.segments
-                    if seg_x < start + w and seg_x + seg_w > start
-                )
                 if self.height is not None and top + h - spacing > self.height + 1e-9:
                     continue
-                candidate = (top + h, start, top, w, h, rotated)
-                if best is None or candidate[:2] < best[:2]:
-                    best = candidate
+                best = (top + h, start, top, w, h, rotated)
         return best
 
     def place(self, x: float, w: float, top: float) -> None:
@@ -433,15 +445,22 @@ def _cut_order(points: list[tuple[float, float]]) -> list[int]:
         order.append(nearest)
         remaining.remove(nearest)
         position = points[nearest]
-    # 2-opt on an open path that starts at the origin; capped for big layouts.
+    # 2-opt on an open path that starts at the origin. Reversing order[i..j] only
+    # replaces two edges, so each move is evaluated in O(1).
+    origin = (0.0, 0.0)
     improved, rounds = True, 0
-    while improved and rounds < 50 and len(order) <= 400:
+    while improved and rounds < 50:
         improved, rounds = False, rounds + 1
         for i in range(len(order) - 1):
+            before = points[order[i - 1]] if i else origin
             for j in range(i + 1, len(order)):
-                candidate = order[:i] + order[i : j + 1][::-1] + order[j + 1 :]
-                if _route_length(points, candidate) < _route_length(points, order) - 1e-9:
-                    order = candidate
+                first, last = points[order[i]], points[order[j]]
+                after = points[order[j + 1]] if j + 1 < len(order) else None
+                change = math.dist(before, last) - math.dist(before, first)
+                if after is not None:
+                    change += math.dist(first, after) - math.dist(last, after)
+                if change < -1e-9:
+                    order[i : j + 1] = order[i : j + 1][::-1]
                     improved = True
     return order
 
@@ -476,6 +495,19 @@ def _pack(
     ]
     last = max(p.y + p.height for p in sheets[-1])
     return placements, len(sheets), (len(sheets) - 1) * material.height + last, notes
+
+
+def packed_length(
+    document: PatternDocument,
+    roll_width: float,
+    spacing: float = 3.0,
+    cache: PieceCache | None = None,
+) -> float:
+    """Only the SKYLINE length on a roll: the quick estimate used inside other searches."""
+    pieces = _pieces(document.shapes, cache)
+    if not pieces:
+        return 0.0
+    return _pack(pieces, Material(roll_width), spacing, "SKYLINE", None)[2]
 
 
 def _waste(material_area: float, width: float, length: float) -> float:
