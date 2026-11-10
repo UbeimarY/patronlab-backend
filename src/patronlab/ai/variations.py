@@ -279,7 +279,7 @@ class Design:
                 dx, dy, scale, turn = genome.moves[unit]
                 changes["x"] = shape.x + dx
                 changes["y"] = shape.y + dy
-                if scale != 1.0:
+                if not math.isclose(scale, 1.0):
                     changes["width"] = shape.width * scale
                     changes["height"] = shape.height * scale
                     if shape.points:
