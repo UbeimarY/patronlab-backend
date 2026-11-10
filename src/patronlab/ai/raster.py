@@ -11,6 +11,7 @@ from patronlab.ai.geometry import outline
 from patronlab.document import PatternDocument, Shape
 
 GRID = 96  # cells on the longest side
+CACHE_LIMIT = 6000  # masks kept (about 55 MB at 96×96 cells); the oldest go first
 
 MaskCache = dict[tuple, np.ndarray]
 
@@ -48,7 +49,11 @@ def shape_masks(
         image = Image.new("1", (cols, rows), 0)
         points = [(x * scale, y * scale) for x, y in outline(shape)]
         ImageDraw.Draw(image).polygon(points, fill=1)
-        masks[index] = np.asarray(image, dtype=bool)
+        mask = np.asarray(image, dtype=bool)
+        masks[index] = mask
         if cache is not None:
-            cache[key] = masks[index]
+            if len(cache) >= CACHE_LIMIT:
+                del cache[next(iter(cache))]  # dicts keep insertion order: oldest first
+            # Its own array: a view of ``masks`` would keep every candidate's stack alive.
+            cache[key] = mask
     return masks
