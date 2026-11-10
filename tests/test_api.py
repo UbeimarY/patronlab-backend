@@ -342,3 +342,44 @@ async def test_ai_tools_are_rate_limited_per_user(gql: GraphQL, make_user, setti
     assert limited["errors"][0]["extensions"]["retryAfter"] > 0
     # Each artisan has their own quota.
     assert "errors" not in await gql(layout, luis, doc=sample_document(2))
+
+
+DUPLICATE = "mutation($id: ID!) { duplicatePattern(id: $id) { id name material currentVersion pieceCount mode } }"
+
+
+async def test_duplicate_copies_the_current_version(gql: GraphQL, make_user) -> None:  # noqa: ANN001
+    token = await make_user("rosa@example.com")
+    pattern_id = await _create(gql, token, shapes=3)
+    await gql(
+        SAVE, token, input={"id": pattern_id, "baseVersion": 1, "document": sample_document(5)}
+    )
+    copy = (await gql(DUPLICATE, token, id=pattern_id))["data"]["duplicatePattern"]
+    assert copy["id"] != pattern_id
+    assert copy == copy | {
+        "name": "Mochila wayuu (copia)",
+        "material": "fabric",
+        "currentVersion": 1,
+        "pieceCount": 5,
+        "mode": "pattern",
+    }
+    body = await gql(PATTERN, token, id=copy["id"])
+    assert body["data"]["pattern"]["versions"][0]["note"] == "Copia de «Mochila wayuu», versión 2"
+    assert len((await gql("{ patterns { id } }", token))["data"]["patterns"]) == 2
+
+
+async def test_duplicate_respects_ownership(gql: GraphQL, make_user) -> None:  # noqa: ANN001
+    rosa = await make_user("rosa@example.com")
+    luis = await make_user("luis@example.com")
+    pattern_id = await _create(gql, rosa)
+    assert _code(await gql(DUPLICATE, luis, id=pattern_id)) == "NOT_FOUND"
+    assert _code(await gql(DUPLICATE, None, id=pattern_id)) == "UNAUTHENTICATED"
+    assert (await gql("{ patterns { id } }", luis))["data"]["patterns"] == []
+
+
+async def test_duplicate_respects_the_pattern_limit(gql: GraphQL, make_user, monkeypatch) -> None:  # noqa: ANN001
+    from patronlab.api import schema
+
+    token = await make_user("rosa@example.com")
+    pattern_id = await _create(gql, token)
+    monkeypatch.setattr(schema, "MAX_PATTERNS_PER_USER", 1)
+    assert _code(await gql(DUPLICATE, token, id=pattern_id)) == "LIMIT_REACHED"

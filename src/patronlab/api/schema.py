@@ -415,6 +415,29 @@ async def _owned_pattern(
     return pattern
 
 
+async def _new_pattern(
+    info: Info[Context, None],
+    user: User,
+    name: str,
+    material: str,
+    document: PatternDocument,
+    note: str,
+) -> PatternType:
+    session = info.context.session
+    owned = await session.scalar(
+        select(func.count()).select_from(Pattern).where(Pattern.owner_id == user.id)
+    )
+    if owned >= MAX_PATTERNS_PER_USER:
+        raise AppError("LIMIT_REACHED", f"Puedes tener hasta {MAX_PATTERNS_PER_USER} patrones.")
+    pattern = Pattern(owner_id=user.id, name=name, material=material, current_version=1)
+    session.add(pattern)
+    await session.flush()
+    session.add(_version_row(pattern, 1, document, note))
+    await session.commit()
+    await session.refresh(pattern)
+    return PatternType.of(pattern, _summary_of(document))
+
+
 async def _add_version(
     info: Info[Context, None],
     pattern: Pattern,
@@ -561,25 +584,36 @@ class Mutation:
         self, info: Info[Context, None], input: CreatePatternInput
     ) -> PatternType:
         user = await info.context.user()
-        session = info.context.session
-        owned = await session.scalar(
-            select(func.count()).select_from(Pattern).where(Pattern.owner_id == user.id)
-        )
-        if owned >= MAX_PATTERNS_PER_USER:
-            raise AppError("LIMIT_REACHED", f"Puedes tener hasta {MAX_PATTERNS_PER_USER} patrones.")
         document = _document(input.document)
-        pattern = Pattern(
-            owner_id=user.id,
-            name=_name(input.name),
-            material=_material(input.material),
-            current_version=1,
+        return await _new_pattern(
+            info,
+            user,
+            _name(input.name),
+            _material(input.material),
+            document,
+            "Versión inicial",
         )
-        session.add(pattern)
-        await session.flush()
-        session.add(_version_row(pattern, 1, document, "Versión inicial"))
-        await session.commit()
-        await session.refresh(pattern)
-        return PatternType.of(pattern, _summary_of(document))
+
+    @strawberry.mutation(description='Copies the current version into a new pattern "(copia)".')
+    async def duplicate_pattern(self, info: Info[Context, None], id: strawberry.ID) -> PatternType:
+        user = await info.context.user()
+        source = await _owned_pattern(info, id)
+        raw = await info.context.session.scalar(
+            select(PatternVersion.document).where(
+                PatternVersion.pattern_id == source.id,
+                PatternVersion.number == source.current_version,
+            )
+        )
+        suffix = " (copia)"
+        name = source.name[: 100 - len(suffix)] + suffix
+        return await _new_pattern(
+            info,
+            user,
+            name,
+            source.material,
+            _document(raw),
+            f"Copia de «{source.name}», versión {source.current_version}"[:200],
+        )
 
     @strawberry.mutation(
         description="Saves a new version. Fails with VERSION_CONFLICT if baseVersion is stale."
